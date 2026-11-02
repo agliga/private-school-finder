@@ -12,8 +12,7 @@ from psycopg.rows import dict_row
 
 from .config import settings
 from .models import School
-
-METERS_PER_MILE = 1609.344
+from .query import SchoolQuery, build_search_sql, build_stats_sql
 
 
 @contextmanager
@@ -26,6 +25,14 @@ def connect(url: str | None = None):
         except Exception:  # extension not created yet
             pass
         yield conn
+
+
+def apply_schema(conn) -> None:
+    """(Re)apply db/schema.sql. Idempotent: adds new columns, rebuilds the view."""
+    from pathlib import Path
+
+    conn.execute((Path(__file__).resolve().parents[2] / "db" / "schema.sql").read_text())
+    conn.commit()
 
 
 def upsert_schools(conn, schools: Iterable[School]) -> int:
@@ -56,48 +63,54 @@ def add_fact(conn, ppin: str, field: str, value: dict, source_url: str, quote: s
     )
 
 
-def search_schools(
-    conn,
-    lat: float,
-    lon: float,
-    radius_miles: float = 15,
-    religious_group: str | None = None,
-    affiliation: str | None = None,
-    level: str | None = None,
-    max_tuition: float | None = None,
-    min_outcome_score: float | None = None,
-    limit: int = 25,
-) -> list[dict[str, Any]]:
-    """Structured search. Unknown tuition/outcome values are kept unless a filter excludes them."""
-    where = ["earth_box(ll_to_earth(%(lat)s, %(lon)s), %(radius)s) @> ll_to_earth(lat, lon)",
-             "earth_distance(ll_to_earth(%(lat)s, %(lon)s), ll_to_earth(lat, lon)) <= %(radius)s"]
-    params: dict[str, Any] = {"lat": lat, "lon": lon, "radius": radius_miles * METERS_PER_MILE,
-                              "limit": limit}
-    if religious_group:
-        where.append("religious_group = %(religious_group)s")
-        params["religious_group"] = religious_group
-    if affiliation:
-        where.append("affiliation ILIKE %(affiliation)s")
-        params["affiliation"] = f"%{affiliation}%"
-    if level:
-        where.append("level = %(level)s")
-        params["level"] = level
-    if max_tuition is not None:
-        where.append("tuition_max <= %(max_tuition)s")
-        params["max_tuition"] = max_tuition
-    if min_outcome_score is not None:
-        where.append("college_outcome_score >= %(min_score)s")
-        params["min_score"] = min_outcome_score
-    sql = f"""
-        SELECT ppin, name, city, religious_group, affiliation, level, enrollment, website,
-               tuition_max, college_outcome_score,
-               round((earth_distance(ll_to_earth(%(lat)s, %(lon)s), ll_to_earth(lat, lon))
-                      / {METERS_PER_MILE})::numeric, 1) AS miles
-        FROM school_summary
-        WHERE {' AND '.join(where)}
-        ORDER BY miles
-        LIMIT %(limit)s"""
-    return list(conn.execute(sql, params))
+# Rough centers for common places; anything else falls back to the average location
+# of loaded schools in that city.
+PLACES = {
+    "san jose": (37.3382, -121.8863),
+    "palo alto": (37.4419, -122.1430),
+    "san francisco": (37.7749, -122.4194),
+    "oakland": (37.8044, -122.2712),
+    "cupertino": (37.3230, -122.0322),
+    "santa clara": (37.3541, -121.9552),
+    "sunnyvale": (37.3688, -122.0363),
+    "mountain view": (37.3861, -122.0839),
+}
+
+
+def resolve_place(conn, place: str) -> tuple[float, float] | None:
+    key = place.lower().split(",")[0].strip()
+    if key in PLACES:
+        return PLACES[key]
+    row = conn.execute(
+        "SELECT avg(lat) AS lat, avg(lon) AS lon FROM schools WHERE lower(city) = %s "
+        "AND lat IS NOT NULL", (key,)).fetchone()
+    if row and row["lat"] is not None:
+        return float(row["lat"]), float(row["lon"])
+    return None
+
+
+def run_search(conn, q: SchoolQuery) -> dict[str, Any]:
+    """Run a SchoolQuery. Returns rows, total matches and how the place was resolved."""
+    center = None
+    if q.place:
+        center = resolve_place(conn, q.place)
+        if center is None:
+            return {"error": f"Unknown place '{q.place}'. Try a city that has schools loaded, "
+                             "or use `cities` to filter by city name.", "rows": [], "total": 0}
+    sql, params = build_search_sql(q, center)
+    rows = list(conn.execute(sql, params))
+    total = rows[0].pop("total") if rows else 0
+    for r in rows[1:]:
+        r.pop("total", None)
+    return {"rows": rows, "total": total, "center": center}
+
+
+def run_stats(conn, q: SchoolQuery, group_by: str) -> dict[str, Any]:
+    center = resolve_place(conn, q.place) if q.place else None
+    if q.place and center is None:
+        return {"error": f"Unknown place '{q.place}'", "rows": []}
+    sql, params = build_stats_sql(q, group_by, center)  # type: ignore[arg-type]
+    return {"rows": list(conn.execute(sql, params)), "group_by": group_by}
 
 
 def get_school(conn, ppin: str) -> dict[str, Any] | None:

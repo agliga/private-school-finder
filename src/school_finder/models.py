@@ -22,6 +22,7 @@ class School(BaseModel):
     religious_group: ReligiousGroup | None = None
     affiliation: str | None = None
     level: Level | None = None
+    typology: str | None = None
     enrollment: int | None = None
     website: str | None = None
     pss_year: str | None = None

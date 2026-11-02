@@ -119,7 +119,56 @@ docker compose exec db psql -U schools -c "select count(*), count(lat) from scho
 docker compose exec db psql -U schools -c "select ppin, name, city, religious_group from schools limit 10;"
 ```
 
-### 3. Enrich schools (uses the API)
+### 3. Search in plain English
+
+`find` turns a question into structured filters with one Claude call, runs them as SQL and
+prints a table. It works right after loading. No enrichment needed (tuition and college
+columns appear once schools are enriched).
+
+```bash
+school-finder find "show me all catholic high schools"
+school-finder find "Jewish schools in San Jose"
+school-finder find "non-religious high schools within 5 miles of Palo Alto"
+school-finder find "special education schools in Sunnyvale"
+school-finder find "the biggest private high schools"
+school-finder find "how many catholic schools are in each city"     # counts
+```
+
+Example output (illustrative):
+
+```
+Showing catholic high schools, sorted by name
+
+#  School                        City      Level  Affiliation     Students
+-  ----------------------------  --------  -----  --------------  --------
+1  St. Sample High School        Campbell  High   Roman Catholic  1,200
+...
+12 schools matched
+```
+
+Options: `-v` shows the filters Claude chose, `--csv out.csv` saves the results,
+`--json` prints JSON.
+
+What it understands: religion (Catholic, other religious, nonsectarian/secular), specific
+denominations (Jewish, Lutheran, Baptist, Islamic, Episcopal...), level (high, elementary/
+middle, K-12), city ("in X"), distance ("near X", "within N miles of X"), school type
+(special education, special emphasis, conservative Christian), size, name ("Montessori"),
+tuition and college outcomes (enriched schools), sorting ("biggest", "closest", "cheapest"),
+and "how many" breakdowns.
+
+For back-and-forth questions, use chat. Follow-ups keep the earlier filters:
+
+```bash
+school-finder chat
+> catholic high schools near San Jose
+> only the ones with more than 500 students
+> which of those are in Campbell?
+```
+
+**Upgrading from an earlier version?** Run `school-finder init-db`, then re-run `load-pss` so
+denominations and school types are filled in.
+
+### 4. Enrich schools (uses the API)
 
 Finds each school's website, crawls the relevant pages, extracts tuition / affiliation /
 college lists with a quote + URL per fact, verifies the quotes, and embeds the pages.
@@ -139,7 +188,7 @@ docker compose exec db psql -U schools -c \
 
 Cost: a few cents per school with the default Haiku extraction model.
 
-### 4. Ask questions
+### 5. Ask open-ended questions
 
 ```bash
 school-finder ask "Catholic high schools near San Jose under \$30k" -v
@@ -148,7 +197,7 @@ school-finder ask "Catholic high schools near San Jose under \$30k" -v
 `-v` prints the tool calls the agent made. Answers cite sources; anything a school doesn't
 publish is reported as "not published".
 
-### 5. Use from Claude Code, Cursor or Claude Desktop (MCP)
+### 6. Use from Claude Code, Cursor or Claude Desktop (MCP)
 
 Add to your MCP client config (use your absolute path):
 
@@ -162,11 +211,12 @@ Add to your MCP client config (use your absolute path):
 }
 ```
 
-Tools exposed: `search_schools`, `semantic_search`, `get_school`.
+Tools exposed: `search_schools`, `count_schools`, `semantic_search`, `get_school`.
 
-### 6. Run evals
+### 7. Run evals
 
 ```bash
+school-finder eval --suite translate              # question -> filters accuracy (no DB needed)
 school-finder snapshot --ppin <PPIN>              # freeze that school's pages
 # hand-label it in evals/labels/extraction.jsonl (format in evals/README.md)
 school-finder eval --suite extraction             # score
@@ -184,12 +234,15 @@ Settings > Secrets and variables > Actions) and fails if a metric regresses.
 | `school-finder load-pss <csv> [--state CA] [--county-zip-prefix 950 951]` | Import schools from the PSS file |
 | `school-finder enrich [--city X \| --ppin ...] [--limit N] [--no-embed]` | Find site, crawl, extract, verify, embed |
 | `school-finder snapshot [--city X \| --ppin ...]` | Freeze pages for evals |
-| `school-finder ask "<question>" [-v]` | Ask the query agent |
-| `school-finder eval [--suite extraction\|queries\|all] [--check] [--update-baseline]` | Run evals |
+| `school-finder init-db` | Apply/upgrade the database schema (safe to re-run) |
+| `school-finder find "<question>" [-v] [--csv FILE] [--json]` | Plain-English search, printed as a table |
+| `school-finder chat [-v]` | Interactive chat with follow-up questions |
+| `school-finder ask "<question>" [-v]` | One-off open-ended question (multi-step agent, cites sources) |
+| `school-finder eval [--suite extraction\|translate\|queries\|all] [--check] [--update-baseline]` | Run evals |
 | `school-finder mcp` | Start the MCP server (stdio) |
 
 Settings live in `.env`: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `EXTRACT_MODEL`,
-`AGENT_MODEL`, `EMBED_MODEL`, `CRAWL_USER_AGENT`.
+`TRANSLATE_MODEL`, `AGENT_MODEL`, `EMBED_MODEL`, `CRAWL_USER_AGENT`.
 
 ## Troubleshooting
 
@@ -201,7 +254,8 @@ Settings live in `.env`: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `EXTRACT_MODEL`,
 | `requires a different Python: 3.9.6 not in '>=3.11'` | macOS system Python is too old: use `uv venv --python 3.12` (see Setup) |
 | `brew install python` fails with `C compiler cannot create executables` | Use uv instead, or reinstall Command Line Tools: `sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install` |
 | `pip: command not found` inside the venv | uv venvs don't include pip; use `uv pip install ...` |
-| `Unknown place '...'` from `ask` | Add the city to `PLACES` in `src/school_finder/tools.py`, or ask with coordinates |
+| `Unknown place '...'` | The city has no loaded schools to center on: add it to `PLACES` in `src/school_finder/db.py`, or ask "in <city>" instead of "near" |
+| `column "typology" does not exist` | Run `school-finder init-db` (schema upgrade), then re-run `load-pss` |
 
 ## Evals
 

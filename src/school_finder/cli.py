@@ -1,4 +1,4 @@
-"""Command line: load-pss | enrich | snapshot | ask | eval | mcp"""
+"""Command line: init-db | load-pss | enrich | snapshot | find | ask | chat | eval | mcp"""
 
 from __future__ import annotations
 
@@ -65,15 +65,97 @@ def cmd_snapshot(a):
             print(f"{school['ppin']}: {len(pages)} pages")
 
 
+def cmd_init_db(_a):
+    from . import db
+
+    with db.connect() as conn:
+        db.apply_schema(conn)
+    print("Schema applied")
+
+
+def print_find(conn, t, as_json: bool = False, csv_path: str | None = None) -> None:
+    from . import db, render
+
+    if t.kind == "count":
+        res = db.run_stats(conn, t.query, t.group_by or "religious_group")
+        if "error" in res:
+            print(res["error"])
+            return
+        if as_json:
+            print(json.dumps(res, default=str, indent=2))
+            return
+        print(f"Counting {t.query.describe().removesuffix(', sorted by name')} by {t.group_by}\n")
+        print(render.stats_table(res["rows"], t.group_by or "religious_group"))
+        return
+
+    res = db.run_search(conn, t.query)
+    if "error" in res:
+        print(res["error"])
+        return
+    rows = res["rows"]
+    if as_json:
+        print(json.dumps({"query": t.query.model_dump(exclude_none=True), **res}, default=str,
+                         indent=2))
+        return
+    print(f"Showing {t.query.describe()}\n")
+    if not rows:
+        print("No schools matched.")
+        return
+    print(render.schools_table(rows))
+    shown = len(rows)
+    total = res["total"]
+    more = f" (showing {shown}; add 'all' to see every one)" if total > shown else ""
+    print(f"\n{total} school{'s' if total != 1 else ''} matched{more}")
+    if csv_path:
+        Path(csv_path).write_text(render.to_csv(rows))
+        print(f"Saved {csv_path}")
+
+
+def cmd_find(a):
+    from . import db
+    from .translate import AnthropicToolLLM, translate
+
+    t = translate(AnthropicToolLLM(settings.translate_model), a.question)
+    if a.verbose:
+        print(json.dumps({"kind": t.kind, "group_by": t.group_by,
+                          "filters": t.query.model_dump(exclude_none=True)}, indent=2),
+              file=sys.stderr)
+    with db.connect() as conn:
+        print_find(conn, t, as_json=a.json, csv_path=a.csv)
+
+
 def cmd_ask(a):
     from . import db
-    from .agent import ask
+    from .agent import ask, strip_ppins_block
 
     with db.connect() as conn:
         res = ask(conn, a.question)
-    print(res.answer)
+    print(strip_ppins_block(res.answer))
     if a.verbose:
         print(json.dumps(res.tool_calls, indent=2), file=sys.stderr)
+
+
+def cmd_chat(a):
+    from . import db
+    from .agent import Conversation, strip_ppins_block
+
+    print("Ask about private schools. Follow-ups refine the last answer. Ctrl-D or 'quit' to exit.")
+    with db.connect() as conn:
+        convo = Conversation(conn)
+        while True:
+            try:
+                q = input("\n> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if q.lower() in {"quit", "exit", "q"}:
+                break
+            if not q:
+                continue
+            res = convo.ask(q)
+            print("\n" + strip_ppins_block(res.answer))
+            if a.verbose:
+                print(json.dumps(res.tool_calls, indent=2), file=sys.stderr)
 
 
 def cmd_eval(a):
@@ -86,18 +168,30 @@ def cmd_eval(a):
         labels = evals.load_jsonl(evals.EVALS / "labels" / "extraction.jsonl")
         summary["extraction"], details["extraction"] = evals.run_extraction(
             AnthropicLLM(settings.extract_model), labels)
+    if a.suite in ("translate", "all"):
+        from .translate import AnthropicToolLLM
+
+        summary["translate"], details["translate"] = evals.run_translate(
+            AnthropicToolLLM(settings.translate_model),
+            evals.load_jsonl(evals.EVALS / "translate.jsonl"))
     if a.suite in ("queries", "all"):
         from . import db
 
         with db.connect() as conn:
             summary["queries"], details["queries"] = evals.run_queries(
                 conn, evals.load_jsonl(evals.EVALS / "queries.jsonl"))
+    summary = {k: v for k, v in summary.items() if v}
     path = evals.write_run(summary, details, {"extract_model": settings.extract_model,
+                                              "translate_model": settings.translate_model,
                                               "agent_model": settings.agent_model})
     print(json.dumps(summary, indent=2))
     print(f"Wrote {path}")
     if a.update_baseline:
-        (evals.EVALS / "baseline.json").write_text(json.dumps(summary, indent=2) + "\n")
+        base_path = evals.EVALS / "baseline.json"
+        baseline = json.loads(base_path.read_text()) if base_path.exists() else {}
+        baseline = {k: v for k, v in baseline.items() if v}
+        baseline.update(summary)  # only the suites that just ran
+        base_path.write_text(json.dumps(baseline, indent=2) + "\n")
         print("Baseline updated")
     if a.check:
         base_path = evals.EVALS / "baseline.json"
@@ -137,13 +231,27 @@ def main(argv: list[str] | None = None) -> None:
             s.add_argument("--no-embed", action="store_true")
         s.set_defaults(fn=fn)
 
-    s = sub.add_parser("ask", help="Ask the agent a question")
+    s = sub.add_parser("init-db", help="Apply db/schema.sql (safe to re-run after upgrades)")
+    s.set_defaults(fn=cmd_init_db)
+
+    s = sub.add_parser("find", help="Plain-English search, e.g. 'all catholic high schools'")
+    s.add_argument("question")
+    s.add_argument("--json", action="store_true", help="Print JSON instead of a table")
+    s.add_argument("--csv", help="Also save results to this CSV file")
+    s.add_argument("-v", "--verbose", action="store_true", help="Show the translated filters")
+    s.set_defaults(fn=cmd_find)
+
+    s = sub.add_parser("ask", help="Ask the agent a question (multi-step, cites sources)")
     s.add_argument("question")
     s.add_argument("-v", "--verbose", action="store_true")
     s.set_defaults(fn=cmd_ask)
 
+    s = sub.add_parser("chat", help="Interactive chat with follow-up questions")
+    s.add_argument("-v", "--verbose", action="store_true")
+    s.set_defaults(fn=cmd_chat)
+
     s = sub.add_parser("eval", help="Run evals")
-    s.add_argument("--suite", choices=["extraction", "queries", "all"], default="extraction")
+    s.add_argument("--suite", choices=["extraction", "translate", "queries", "all"], default="extraction")
     s.add_argument("--check", action="store_true", help="Fail on regression vs baseline")
     s.add_argument("--update-baseline", action="store_true")
     s.set_defaults(fn=cmd_eval)

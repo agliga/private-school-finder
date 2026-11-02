@@ -32,7 +32,7 @@ jobs:
       - run: pytest -q
 
   evals:
-    # Runs the extraction eval on frozen snapshots and fails on regression vs baseline.
+    # Runs the evals and fails on regression vs evals/baseline.json.
     # Needs the ANTHROPIC_API_KEY repo secret; skipped (not failed) without it.
     needs: test
     runs-on: ubuntu-latest
@@ -44,19 +44,27 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Check for API key and labels
+      - name: Decide which suites can run
         id: gate
         run: |
-          if [ -n "$ANTHROPIC_API_KEY" ] && [ -s evals/labels/extraction.jsonl ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Skipping evals: no ANTHROPIC_API_KEY secret or no labels yet"
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "Skipping evals: no ANTHROPIC_API_KEY secret"; exit 0
           fi
-      - if: steps.gate.outputs.run == 'true'
+          echo "translate=true" >> "$GITHUB_OUTPUT"
+          if [ -s evals/labels/extraction.jsonl ]; then
+            echo "extraction=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No extraction labels yet; skipping extraction suite"
+          fi
+      - if: steps.gate.outputs.translate == 'true'
         run: pip install -e .
-      - if: steps.gate.outputs.run == 'true'
+      - name: Translation eval (question -> filters)
+        if: steps.gate.outputs.translate == 'true'
+        run: school-finder eval --suite translate --check
+      - name: Extraction eval (frozen pages vs hand labels)
+        if: steps.gate.outputs.extraction == 'true'
         run: school-finder eval --suite extraction --check
-      - if: steps.gate.outputs.run == 'true'
+      - if: always() && steps.gate.outputs.translate == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: eval-results
