@@ -85,3 +85,35 @@ def test_chunking_overlaps_and_bounds():
     chunks = chunk_text(text, max_chars=1000, overlap=100)
     assert len(chunks) > 1
     assert all(len(c) <= 1300 for c in chunks)
+
+
+def test_schedule_and_calendar_are_extracted_and_verified():
+    pages = PAGES + [Page(url="https://example-prep.test/calendar", title="Calendar",
+                          text="2026-27 Calendar\nFirst Day of School: August 19, 2026\n"
+                               "Last Day of School: June 4, 2027\nSchool hours 7:50 am - 3:10 pm")]
+    payload = {
+        "schedule": {"start_time": "07:50", "end_time": "15:10", "applies_to": "all grades",
+                     "source_url": "https://example-prep.test/calendar",
+                     "quote": "School hours 7:50 am - 3:10 pm"},
+        "calendar": {"school_year": "2026-27", "first_day": "2026-08-19", "last_day": "2027-06-04",
+                     "source_url": "https://example-prep.test/calendar",
+                     "quote": "First Day of School: August 19, 2026"},
+    }
+    facts, verified = extract_facts(StubLLM(payload), "Example Prep", pages)
+    assert facts.schedule.start_time == "07:50" and facts.calendar.last_day == "2027-06-04"
+    assert verified == {"schedule": True, "calendar": True}
+
+
+def test_system_prompt_names_current_school_year():
+    from datetime import date
+
+    from school_finder.extract import system_prompt
+
+    assert "2026-27 school year" in system_prompt(date(2026, 11, 1))
+    assert "{school_year}" not in system_prompt()
+
+
+def test_pdf_links_allowed_cross_domain():
+    html = '<a href="https://cdn.example.net/files/2026-27-calendar.pdf">School Calendar</a>'
+    assert score_links("https://example-prep.test/", html) == [
+        "https://cdn.example.net/files/2026-27-calendar.pdf"]

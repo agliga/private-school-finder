@@ -102,6 +102,22 @@ def print_find(conn, t, as_json: bool = False, csv_path: str | None = None) -> N
         print("No schools matched.")
         return
     print(render.schools_table(rows))
+    tr = res.get("travel")
+    if tr:
+        from datetime import date
+
+        when = date.fromisoformat(tr["day"]).strftime("%a %b %-d")
+        if tr.get("provider"):
+            print(f"\nDrive times from {tr['origin']} with predicted traffic for {when}: morning "
+                  "leaves before the start time, afternoon leaves school at the end time.")
+            if tr["routed"] < len(rows):
+                print(f"Drive times computed for the first {tr['routed']} schools "
+                      "(MAX_ROUTE_SCHOOLS).")
+        else:
+            print(f"\nDistances from {tr['origin']}. {tr.get('note', '')}")
+        if not tr.get("precise_origin", True):
+            print("Location is approximate (from your IP). Set HOME_ADDRESS or install "
+                  "CoreLocationCLI for exact times.")
     shown = len(rows)
     total = res["total"]
     more = f" (showing {shown}; add 'all' to see every one)" if total > shown else ""

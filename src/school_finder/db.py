@@ -89,20 +89,74 @@ def resolve_place(conn, place: str) -> tuple[float, float] | None:
     return None
 
 
-def run_search(conn, q: SchoolQuery) -> dict[str, Any]:
-    """Run a SchoolQuery. Returns rows, total matches and how the place was resolved."""
-    center = None
+class DbTravelCache:
+    """Drive-time cache in Postgres; entries older than `max_age_days` are refetched."""
+
+    def __init__(self, conn, max_age_days: int = 7):
+        self.conn, self.max_age_days = conn, max_age_days
+
+    def get(self, origin_key, ppin, direction, slot):
+        row = self.conn.execute(
+            "SELECT minutes, miles FROM travel_cache WHERE origin_key=%s AND ppin=%s AND "
+            "direction=%s AND slot=%s AND fetched_at > now() - make_interval(days => %s)",
+            (origin_key, ppin, direction, slot, self.max_age_days)).fetchone()
+        return (float(row["minutes"]), float(row["miles"] or 0)) if row else None
+
+    def put(self, origin_key, ppin, direction, slot, minutes, miles, provider):
+        self.conn.execute(
+            "INSERT INTO travel_cache (origin_key, ppin, direction, slot, minutes, miles, provider) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (origin_key, ppin, direction, slot) DO UPDATE "
+            "SET minutes=EXCLUDED.minutes, miles=EXCLUDED.miles, provider=EXCLUDED.provider, "
+            "fetched_at=now()", (origin_key, ppin, direction, slot, minutes, miles, provider))
+        self.conn.commit()
+
+
+def run_search(conn, q: SchoolQuery, origin=None, provider=None) -> dict[str, Any]:
+    """Run a SchoolQuery. With `q.origin`, adds miles and AM/PM drive times from there.
+
+    `origin` / `provider` can be passed in (tests, or an already-resolved location).
+    """
+    from . import travel
+    from .geo import OriginError, resolve_origin
+
+    center, filter_radius, radius = None, True, None
     if q.place:
         center = resolve_place(conn, q.place)
         if center is None:
             return {"error": f"Unknown place '{q.place}'. Try a city that has schools loaded, "
                              "or use `cities` to filter by city name.", "rows": [], "total": 0}
-    sql, params = build_search_sql(q, center)
+    if q.origin and origin is None:
+        try:
+            origin = resolve_origin(q.origin)
+        except OriginError as e:
+            return {"error": str(e), "rows": [], "total": 0}
+    if origin and center is None:
+        # order by distance from the start point; only filter by radius for "within N minutes"
+        center = (origin.lat, origin.lon)
+        filter_radius = bool(q.max_drive_minutes)
+        radius = q.max_drive_minutes * 1.2 if q.max_drive_minutes else None  # <= 72 mph average
+
+    sql, params = build_search_sql(q, center, filter_radius, radius)
     rows = list(conn.execute(sql, params))
-    total = rows[0].pop("total") if rows else 0
-    for r in rows[1:]:
+    total = rows[0]["total"] if rows else 0
+    for r in rows:
         r.pop("total", None)
-    return {"rows": rows, "total": total, "center": center}
+
+    result: dict[str, Any] = {"rows": rows, "total": total, "center": center}
+    if origin:
+        provider = provider if provider is not None else travel.default_provider()
+        result["travel"] = travel.add_travel(rows, origin, provider, DbTravelCache(conn))
+        if not provider:
+            result["travel"]["note"] = ("Straight-line miles only. Set GOOGLE_MAPS_API_KEY for "
+                                        "traffic-aware drive times.")
+        if q.max_drive_minutes and provider:
+            rows[:] = [r for r in rows if r.get("am_minutes") is not None
+                       and r["am_minutes"] <= q.max_drive_minutes]
+            result["total"] = len(rows)
+        if q.sort == "drive_time":
+            rows.sort(key=lambda r: (r.get("am_minutes") is None, r.get("am_minutes") or 0,
+                                     r.get("miles") or 0))
+    return result
 
 
 def run_stats(conn, q: SchoolQuery, group_by: str) -> dict[str, Any]:

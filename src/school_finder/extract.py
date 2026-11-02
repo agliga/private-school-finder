@@ -22,6 +22,11 @@ Rules:
   Ignore one-time fees, deposits and financial-aid amounts.
 - Matriculation: list college names from a published college list (enrolled or admitted).
   Say which kind it is.
+- Schedule: the regular daily start and dismissal times (bell schedule, "school hours").
+  Use 24h HH:MM. If times differ by grade, use the upper grades (high school if the school
+  has one) and say so in applies_to. Ignore early-release/minimum days and before/after care.
+- Calendar: first and last day of school for students in the {school_year} school year only
+  (YYYY-MM-DD). Ignore staff-only days. If the pages only show another year, leave it null.
 """
 
 RECORD_TOOL = {
@@ -57,6 +62,14 @@ class AnthropicLLM:
         return {}
 
 
+def system_prompt(today=None) -> str:
+    from datetime import date
+
+    from .travel import current_school_year
+
+    return SYSTEM.replace("{school_year}", current_school_year(today or date.today()))
+
+
 def build_prompt(school_name: str, pages: list[Page], max_chars_per_page: int = 12000) -> str:
     parts = [f"School: {school_name}\n"]
     for p in pages:
@@ -80,10 +93,10 @@ def quote_on_page(quote: str, source_url: str, pages: list[Page]) -> bool:
 
 
 def extract_facts(llm: LLM, school_name: str, pages: list[Page]) -> tuple[SchoolFacts, dict[str, bool]]:
-    raw = llm.extract(SYSTEM, build_prompt(school_name, pages), RECORD_TOOL)
+    raw = llm.extract(system_prompt(), build_prompt(school_name, pages), RECORD_TOOL)
     facts = SchoolFacts.model_validate(raw)
     verified = {}
-    for field in ("tuition", "matriculation", "affiliation"):
+    for field in ("tuition", "matriculation", "affiliation", "schedule", "calendar"):
         cited = getattr(facts, field)
         if cited is not None:
             verified[field] = quote_on_page(cited.quote, cited.source_url, pages)

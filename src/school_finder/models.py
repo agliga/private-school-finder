@@ -48,6 +48,19 @@ class Matriculation(Cited):
     class_years: str | None = Field(None, description="e.g. 'Class of 2022-2025'")
 
 
+class Schedule(Cited):
+    start_time: str | None = Field(None, description="Regular school-day start, 24h 'HH:MM'")
+    end_time: str | None = Field(None, description="Regular school-day dismissal, 24h 'HH:MM'")
+    applies_to: str | None = Field(
+        None, description="Which grades/days these times are for, e.g. 'grades 9-12, Mon-Thu'")
+
+
+class SchoolCalendar(Cited):
+    school_year: str = Field(description="e.g. '2026-27'")
+    first_day: str | None = Field(None, description="First day of school for students, YYYY-MM-DD")
+    last_day: str | None = Field(None, description="Last day of school for students, YYYY-MM-DD")
+
+
 class SchoolFacts(BaseModel):
     """What the enrichment agent returns for one school.
 
@@ -58,4 +71,6 @@ class SchoolFacts(BaseModel):
     matriculation: Matriculation | None = None
     affiliation: Cited | None = None
     affiliation_name: str | None = None
+    schedule: Schedule | None = None
+    calendar: SchoolCalendar | None = None
     notes: str | None = None

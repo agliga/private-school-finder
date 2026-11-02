@@ -165,13 +165,70 @@ school-finder chat
 > which of those are in Campbell?
 ```
 
-**Upgrading from an earlier version?** Run `school-finder init-db`, then re-run `load-pss` so
-denominations and school types are filled in.
+**Upgrading from an earlier version?** Run `school-finder init-db` (adds new columns and the
+drive-time cache), then re-run `load-pss` so denominations and school types are filled in.
 
-### 4. Enrich schools (uses the API)
+### 4. Distance and drive times from a starting point
 
-Finds each school's website, crawls the relevant pages, extracts tuition / affiliation /
-college lists with a quote + URL per fact, verifies the quotes, and embeds the pages.
+Say where you're starting from and each school gets its address, miles, a **morning drive**
+(predicted traffic, leaving before the school's start time), the **start time**, an
+**afternoon drive** (leaving school at its end time, back to your start), the **end time**,
+and the **first and last day** of the current school year.
+
+```bash
+school-finder find "show me the time it takes from my current location"
+school-finder find "catholic high schools and the drive from 1 Main St, San Jose, CA"
+school-finder find "schools within a 20 minute drive of home"
+```
+
+Example output (illustrative):
+
+```
+#  School            Address        City      Miles  AM drive (leave)  Start   PM drive (leave)  End     First day  Last day
+1  St. Sample High   400 Demo Blvd  Campbell  4.1    14 min (7:20a)    7:50a   19 min (3:10p)    3:10p   Aug 19     Jun 4
+2  Example Prep      100 Example W  San Jose  6.3    22 min (7:30a)    8:00a*  25 min (3:00p)    3:00p*  -          -
+
+* school hasn't published this time (or isn't enriched yet); default used
+Drive times from home with predicted traffic for Tue Nov 3: morning leaves before the start
+time, afternoon leaves school at the end time.
+```
+
+How each column is computed:
+
+| Column | Source |
+|---|---|
+| Address | NCES survey file |
+| Miles | Driving distance from the route; `~` = straight-line when no route was computed |
+| AM drive (leave) | Google Routes API with predicted traffic, leaving `MORNING_LEAD_MINUTES` (default 30) before the start time, on the next weekday |
+| Start / End | The school's bell schedule, extracted by `enrich` with a cited quote; `*` = default (`DEFAULT_START_TIME` / `DEFAULT_END_TIME`) |
+| PM drive (leave) | Same, leaving the school at its end time, driving back to your start |
+| First day / Last day | The school's calendar for the current school year (HTML or PDF), extracted by `enrich` with a cited quote |
+
+**Starting point options** (what the question says → what is used):
+
+- an address ("from 1 Main St, San Jose, CA") → geocoded with the free US Census geocoder
+- "from home" → `HOME_ADDRESS` in `.env`
+- "from my current location" / "from here" → your Mac's location via
+  [CoreLocationCLI](https://github.com/fulldecent/corelocationcli) (`brew install corelocationcli`;
+  allow Location Services for Terminal when asked). Without it: `HOME_ADDRESS`, then an
+  approximate city-level location from your IP (flagged in the output).
+- coordinates ("from 37.33, -121.89")
+
+**Setup for drive times:** in Google Cloud Console, create a project, enable the
+**Routes API**, create an API key (restrict it to the Routes API), and put it in `.env` as
+`GOOGLE_MAPS_API_KEY`. Google bills per route element after a monthly free allowance; check
+current pricing. Each search routes at most `MAX_ROUTE_SCHOOLS` (default 25) schools × 2
+trips, and results are cached for 7 days, so repeat searches are free. Without a key you
+still get straight-line miles.
+
+Start/end times and first/last day only appear for schools you've enriched (step 5). Schools
+enriched before this feature need `enrich` again.
+
+### 5. Enrich schools (uses the API)
+
+Finds each school's website, crawls the relevant pages (including PDF calendars), extracts
+tuition, affiliation, college lists, bell schedule (start/end time) and first/last day of the
+current school year, with a quote + URL per fact, verifies the quotes, and embeds the pages.
 
 ```bash
 school-finder enrich --city "San Jose" --limit 5
@@ -188,7 +245,7 @@ docker compose exec db psql -U schools -c \
 
 Cost: a few cents per school with the default Haiku extraction model.
 
-### 5. Ask open-ended questions
+### 6. Ask open-ended questions
 
 ```bash
 school-finder ask "Catholic high schools near San Jose under \$30k" -v
@@ -197,7 +254,7 @@ school-finder ask "Catholic high schools near San Jose under \$30k" -v
 `-v` prints the tool calls the agent made. Answers cite sources; anything a school doesn't
 publish is reported as "not published".
 
-### 6. Use from Claude Code, Cursor or Claude Desktop (MCP)
+### 7. Use from Claude Code, Cursor or Claude Desktop (MCP)
 
 Add to your MCP client config (use your absolute path):
 
@@ -213,7 +270,7 @@ Add to your MCP client config (use your absolute path):
 
 Tools exposed: `search_schools`, `count_schools`, `semantic_search`, `get_school`.
 
-### 7. Run evals
+### 8. Run evals
 
 ```bash
 school-finder eval --suite translate              # question -> filters accuracy (no DB needed)
@@ -242,7 +299,8 @@ Settings > Secrets and variables > Actions) and fails if a metric regresses.
 | `school-finder mcp` | Start the MCP server (stdio) |
 
 Settings live in `.env`: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `EXTRACT_MODEL`,
-`TRANSLATE_MODEL`, `AGENT_MODEL`, `EMBED_MODEL`, `CRAWL_USER_AGENT`.
+`TRANSLATE_MODEL`, `AGENT_MODEL`, and for travel `GOOGLE_MAPS_API_KEY`, `HOME_ADDRESS`, `TIMEZONE`,
+`MORNING_LEAD_MINUTES`, `DEFAULT_START_TIME`, `DEFAULT_END_TIME`, `MAX_ROUTE_SCHOOLS`, `EMBED_MODEL`, `CRAWL_USER_AGENT`.
 
 ## Troubleshooting
 
@@ -255,6 +313,11 @@ Settings live in `.env`: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `EXTRACT_MODEL`,
 | `brew install python` fails with `C compiler cannot create executables` | Use uv instead, or reinstall Command Line Tools: `sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install` |
 | `pip: command not found` inside the venv | uv venvs don't include pip; use `uv pip install ...` |
 | `Unknown place '...'` | The city has no loaded schools to center on: add it to `PLACES` in `src/school_finder/db.py`, or ask "in <city>" instead of "near" |
+| `Couldn't get your current location` | `brew install corelocationcli` (allow Location Services for Terminal), or set `HOME_ADDRESS` |
+| Miles show `~` and no drive times | Set `GOOGLE_MAPS_API_KEY` with the Routes API enabled |
+| `403` from routes.googleapis.com | Enable the Routes API for the key's project and check the key's API restrictions |
+| Start/End show `*` | The school isn't enriched yet or doesn't publish a bell schedule; run `enrich` for it |
+| `column "start_time" does not exist` / `relation "travel_cache" does not exist` | Run `school-finder init-db` |
 | `column "typology" does not exist` | Run `school-finder init-db` (schema upgrade), then re-run `load-pss` |
 
 ## Evals
