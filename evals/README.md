@@ -28,6 +28,22 @@ Metrics: `tuition_accuracy` (within 2% or $250), `tuition_min_accuracy`,
 Target: 40-50 labeled schools, including ~10 that publish no tuition and ~10 with no
 college list.
 
+## Translation suite (`--suite translate`)
+
+Checks that plain-English questions become the right filters (`school-finder find`).
+Each line of `translate.jsonl` has a question and the expected filters:
+
+```json
+{"question": "show me all catholic high schools",
+ "expected": {"religious_groups": ["catholic"], "levels": ["secondary"], "limit": 500}}
+```
+
+A case passes only if every expected filter matches **and** no other filter was invented
+(e.g. adding a city the user never said). `sort`, `limit` and `group_by` are checked only
+when listed. Counting questions use `"kind": "count"`. Metric: `translate_accuracy`.
+No database needed, so it runs in CI on every push. When `find` gets something wrong,
+add that question here.
+
 ## Query suite (`--suite queries`)
 
 Each line of `queries.jsonl` is a parent-style question plus schools that must / must not

@@ -1,0 +1,20 @@
+{"question": "show me all schools with catholic religious affiliation", "expected": {"religious_groups": ["catholic"], "limit": 500}}
+{"question": "show me all catholic high schools", "expected": {"religious_groups": ["catholic"], "levels": ["secondary"], "limit": 500}}
+{"question": "catholic elementary schools in San Jose", "expected": {"religious_groups": ["catholic"], "levels": ["elementary"], "cities": ["San Jose"]}}
+{"question": "Jewish schools", "expected": {"affiliation": "Jewish"}}
+{"question": "Lutheran schools in Cupertino", "expected": {"affiliation": "Lutheran", "cities": ["Cupertino"]}}
+{"question": "Islamic schools near Santa Clara", "expected": {"affiliation": "Islamic", "place": "Santa Clara"}}
+{"question": "non-religious high schools within 5 miles of Palo Alto", "expected": {"religious_groups": ["nonsectarian"], "levels": ["secondary"], "place": "Palo Alto", "radius_miles": 5}}
+{"question": "secular K-12 schools", "expected": {"religious_groups": ["nonsectarian"], "levels": ["combined"]}}
+{"question": "special education schools in Sunnyvale", "expected": {"typologies": ["nonsectarian_special_education"], "cities": ["Sunnyvale"]}}
+{"question": "religious high schools", "expected": {"religious_groups": ["catholic", "other_religious"], "levels": ["secondary"]}}
+{"question": "the biggest private high schools", "expected": {"levels": ["secondary"], "sort": "enrollment_desc"}}
+{"question": "small schools with under 100 students in Campbell", "expected": {"max_enrollment": 100, "cities": ["Campbell"]}}
+{"question": "closest catholic schools to Mountain View", "expected": {"religious_groups": ["catholic"], "place": "Mountain View", "sort": "distance"}}
+{"question": "schools with a high school program in San Jose", "expected": {"levels": ["secondary", "combined"], "cities": ["San Jose"]}}
+{"question": "how many private schools are there by religion?", "expected": {"kind": "count", "group_by": "religious_group"}}
+{"question": "how many catholic schools are in each city", "expected": {"kind": "count", "group_by": "city", "religious_groups": ["catholic"]}}
+{"question": "what denominations do the religious schools have", "expected": {"kind": "count", "group_by": "affiliation", "religious_groups": ["catholic", "other_religious"]}}
+{"question": "Baptist schools", "expected": {"affiliation": "Baptist"}}
+{"question": "Montessori schools in San Jose", "expected": {"name_contains": "Montessori", "cities": ["San Jose"]}}
+{"question": "cheapest catholic high schools under $25,000 tuition", "expected": {"religious_groups": ["catholic"], "levels": ["secondary"], "max_tuition": 25000, "sort": "tuition_asc"}}

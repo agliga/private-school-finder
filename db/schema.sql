@@ -16,11 +16,15 @@ CREATE TABLE IF NOT EXISTS schools (
     religious_group TEXT,                      -- catholic | other_religious | nonsectarian
     affiliation     TEXT,                      -- detailed orientation, e.g. "Roman Catholic", "Jewish"
     level           TEXT,                      -- elementary | secondary | combined
+    typology        TEXT,                      -- NCES 9-way type, e.g. nonsectarian_special_education
     enrollment      INTEGER,
     website         TEXT,
     pss_year        TEXT,
     updated_at      TIMESTAMPTZ DEFAULT now()
 );
+-- Columns added after the first release (safe to re-run: school-finder init-db)
+ALTER TABLE schools ADD COLUMN IF NOT EXISTS typology TEXT;
+
 CREATE INDEX IF NOT EXISTS schools_earth_idx ON schools USING gist (ll_to_earth(lat, lon));
 
 -- Facts extracted by the enrichment agent. Every value carries provenance.
@@ -49,7 +53,8 @@ CREATE TABLE IF NOT EXISTS page_chunks (
 CREATE INDEX IF NOT EXISTS page_chunks_hnsw ON page_chunks USING hnsw (embedding vector_cosine_ops);
 
 -- Derived, query-friendly view (latest verified fact per field)
-CREATE OR REPLACE VIEW school_summary AS
+DROP VIEW IF EXISTS school_summary;
+CREATE VIEW school_summary AS
 SELECT s.*,
        (SELECT (f.value_json->>'amount')::numeric FROM school_facts f
          WHERE f.ppin = s.ppin AND f.field = 'tuition_max' AND f.verified

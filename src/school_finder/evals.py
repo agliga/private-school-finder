@@ -24,6 +24,7 @@ from statistics import mean
 from .crawl import Page
 from .extract import LLM, extract_facts
 from .models import SchoolFacts
+from .query import DEFAULT_RADIUS_MILES
 from .scoring import normalize_college
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -133,6 +134,61 @@ def run_extraction(llm: LLM, labels: list[dict]) -> tuple[dict, list[dict]]:
     return summary, [asdict(i) for i in items]
 
 
+# ---------- translation suite (question -> filters) ----------
+
+FILTER_FIELDS = ["place", "radius_miles", "cities", "name_contains", "religious_groups",
+                 "affiliation", "typologies", "levels", "min_enrollment", "max_enrollment",
+                 "max_tuition", "min_outcome_score"]
+
+
+def _norm_value(v):
+    if v is None or v == []:
+        return None
+    if isinstance(v, list):
+        return frozenset(str(x).strip().lower() for x in v)
+    if isinstance(v, str):
+        return v.strip().lower()
+    if isinstance(v, (int, float)):
+        return round(float(v), 2)
+    return v
+
+
+def compare_translation(expected: dict, kind: str, query: dict, group_by: str | None) -> list[str]:
+    """Return mismatches. Fields not in `expected` must be empty (no invented filters);
+    `sort`, `limit` and `group_by` are checked only when expected lists them."""
+    errors = []
+    if expected.get("kind", "search") != kind:
+        errors.append(f"kind: expected {expected.get('kind', 'search')}, got {kind}")
+    for f in FILTER_FIELDS:
+        want, got = _norm_value(expected.get(f)), _norm_value(query.get(f))
+        if f == "radius_miles" and expected.get("place") and want is None \
+                and got in (None, float(DEFAULT_RADIUS_MILES)):
+            continue  # "near X" with the default radius filled in is fine
+        if want != got:
+            errors.append(f"{f}: expected {expected.get(f)!r}, got {query.get(f)!r}")
+    for f in ("sort", "limit"):
+        if f in expected and _norm_value(expected[f]) != _norm_value(query.get(f)):
+            errors.append(f"{f}: expected {expected[f]!r}, got {query.get(f)!r}")
+    if "group_by" in expected and expected["group_by"] != group_by:
+        errors.append(f"group_by: expected {expected['group_by']!r}, got {group_by!r}")
+    return errors
+
+
+def run_translate(llm, items: list[dict]) -> tuple[dict, list[dict]]:
+    from .translate import translate
+
+    rows = []
+    for item in items:
+        t = translate(llm, item["question"])
+        errs = compare_translation(item["expected"], t.kind, t.query.model_dump(), t.group_by)
+        rows.append({"question": item["question"], "ok": not errs, "errors": errs,
+                     "got": {"kind": t.kind, "group_by": t.group_by,
+                             **t.query.model_dump(exclude_none=True)}})
+    if not rows:
+        return {}, []
+    return {"n": len(rows), "translate_accuracy": mean(r["ok"] for r in rows)}, rows
+
+
 # ---------- query suite ----------
 
 def run_queries(conn, queries: list[dict]) -> tuple[dict, list[dict]]:
@@ -157,8 +213,8 @@ def run_queries(conn, queries: list[dict]) -> tuple[dict, list[dict]]:
 
 # ---------- run bookkeeping + regression gate ----------
 
-HIGHER_IS_BETTER = {"tuition_accuracy", "tuition_min_accuracy", "citation_verified_rate",
-                    "college_recall", "affiliation_accuracy", "query_recall"}
+HIGHER_IS_BETTER = {"translate_accuracy", "tuition_accuracy", "tuition_min_accuracy",
+                    "citation_verified_rate", "college_recall", "affiliation_accuracy", "query_recall"}
 LOWER_IS_BETTER = {"hallucination_rate", "exclusion_violation_rate"}
 
 
