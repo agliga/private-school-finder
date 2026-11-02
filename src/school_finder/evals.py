@@ -138,7 +138,7 @@ def run_extraction(llm: LLM, labels: list[dict]) -> tuple[dict, list[dict]]:
 
 FILTER_FIELDS = ["place", "radius_miles", "cities", "name_contains", "religious_groups",
                  "affiliation", "typologies", "levels", "min_enrollment", "max_enrollment",
-                 "max_tuition", "min_outcome_score"]
+                 "max_tuition", "min_outcome_score", "origin", "max_drive_minutes"]
 
 
 def _norm_value(v):

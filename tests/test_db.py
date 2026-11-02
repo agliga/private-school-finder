@@ -112,3 +112,48 @@ def test_find_output(conn, capsys):
     print_find(conn, Translation("count", SchoolQuery(), "religious_group"))
     out = capsys.readouterr().out
     assert "Catholic" in out and "Total: 4 schools" in out
+
+
+class StubRoutes:
+    name = "stub"
+
+    def matrix(self, origins, destinations, depart_utc):
+        n = max(len(origins), len(destinations))
+        return {((i, 0) if len(origins) > 1 else (0, i)): (900 + 60 * i, 8046.72) for i in range(n)}
+
+
+def test_search_with_origin_adds_travel(conn):
+    from school_finder.geo import Origin
+
+    db.add_fact(conn, "X0000005", "start_time", {"time": "07:45"}, "https://s.test/hours",
+                "School starts 7:45", True, "stub")
+    db.add_fact(conn, "X0000005", "first_day", {"date": "2026-08-19"}, "https://s.test/cal",
+                "First day August 19", True, "stub")
+    home = Origin(37.30, -121.90, "home")
+    q = SchoolQuery(religious_groups=["catholic"], origin="home", sort="drive_time")
+    res = db.run_search(conn, q, origin=home, provider=StubRoutes())
+    rows = res["rows"]
+    assert res["travel"]["routed"] == 2
+    assert all(r["am_minutes"] is not None and r["pm_minutes"] is not None for r in rows)
+    assert rows == sorted(rows, key=lambda r: r["am_minutes"])
+    sample = next(r for r in rows if r["ppin"] == "X0000005")
+    assert sample["start_time"] == "07:45" and sample["am_depart"] == "07:15"
+    assert sample["first_day"] == "2026-08-19" and sample["drive_miles"] == 5.0
+    # cached: a provider that would fail is never called
+    class Boom:
+        name = "boom"
+
+        def matrix(self, *a):
+            raise AssertionError("should be cached")
+
+    db.run_search(conn, q, origin=home, provider=Boom())
+
+    # no API key: straight-line miles only
+    res = db.run_search(conn, SchoolQuery(origin="home"), origin=home, provider=None)
+    assert res["rows"][0]["miles"] is not None and "am_minutes" not in res["rows"][0]
+    assert "GOOGLE_MAPS_API_KEY" in res["travel"]["note"]
+
+    # within N minutes: radius prefilter + drive-time filter
+    res = db.run_search(conn, SchoolQuery(origin="home", max_drive_minutes=15), origin=home,
+                        provider=StubRoutes())
+    assert all(r["am_minutes"] <= 15 for r in res["rows"])

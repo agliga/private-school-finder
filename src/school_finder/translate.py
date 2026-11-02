@@ -26,6 +26,11 @@ SYSTEM = """You translate a parent's question about private K-12 schools into ex
 - "all"/"every" -> limit 500. "cheapest" -> sort tuition_asc. "biggest" -> enrollment_desc.
   "closest" -> sort distance (needs place).
 - Counting / breakdown questions -> count_schools with the right group_by.
+- Distance, drive or commute time, or "from <somewhere>" -> origin: "current location" for
+  "from here / my location / where I am", "home" for "from home", otherwise the address as
+  written. With an origin and no other sort requested, sort "drive_time".
+  "within a N minute drive" -> max_drive_minutes N (origin "current location" if none given).
+  Don't confuse origin with place: "near X" alone (no drive/commute words) is still place.
 """
 
 

@@ -21,17 +21,70 @@ def _money(v) -> str:
     return f"${float(v):,.0f}" if v is not None else "-"
 
 
+def _clock(hhmm: str | None) -> str:
+    """'15:10' -> '3:10p'."""
+    if not hhmm:
+        return "-"
+    h, m = (int(x) for x in hhmm[:5].split(":"))
+    return f"{(h % 12) or 12}:{m:02d}{'a' if h < 12 else 'p'}"
+
+
+def _day(iso: str | None) -> str:
+    if not iso:
+        return "-"
+    from datetime import date
+
+    return date.fromisoformat(iso).strftime("%b %-d")
+
+
+def _miles(r: dict) -> str:
+    if r.get("drive_miles") is not None:
+        return f"{float(r['drive_miles']):.1f}"
+    if r.get("miles") is not None:
+        return f"~{float(r['miles']):.1f}"
+    return "-"
+
+
+def _drive(minutes, leave: str | None) -> str:
+    if minutes is None:
+        return "-"
+    return f"{int(minutes)} min" + (f" ({_clock(leave)})" if leave else "")
+
+
+def _time_cell(r: dict, key: str, used: str, assumed: str) -> str:
+    if r.get(key):
+        return _clock(r[key])
+    if r.get(used):
+        return _clock(r[used]) + ("*" if r.get(assumed) else "")
+    return "-"
+
+
 def school_columns(rows: Sequence[dict]) -> list[tuple[str, Any]]:
+    travel = any(k in r for r in rows for k in ("am_minutes", "drive_miles", "am_depart"))
     cols: list[tuple[str, Any]] = [
         ("#", None),
         ("School", lambda r: r["name"]),
+        ("Address", lambda r: r.get("address") or "-"),
         ("City", lambda r: r.get("city") or "-"),
         ("Level", lambda r: LEVEL_LABEL.get(r.get("level") or "", "-")),
         ("Affiliation", _affiliation),
         ("Students", lambda r: f"{r['enrollment']:,}" if r.get("enrollment") is not None else "-"),
     ]
-    if any(r.get("miles") is not None for r in rows):
-        cols.append(("Miles", lambda r: f"{float(r['miles']):.1f}" if r.get("miles") is not None else "-"))
+    if any(r.get("miles") is not None or r.get("drive_miles") is not None for r in rows):
+        cols.append(("Miles", _miles))
+    if travel:
+        cols += [
+            ("AM drive (leave)", lambda r: _drive(r.get("am_minutes"), r.get("am_depart"))),
+            ("Start", lambda r: _time_cell(r, "start_time", "start_time_used", "start_assumed")),
+            ("PM drive (leave)", lambda r: _drive(r.get("pm_minutes"), r.get("pm_depart"))),
+            ("End", lambda r: _time_cell(r, "end_time", "end_time_used", "end_assumed")),
+        ]
+    elif any(r.get("start_time") or r.get("end_time") for r in rows):
+        cols += [("Start", lambda r: _clock(r.get("start_time"))),
+                 ("End", lambda r: _clock(r.get("end_time")))]
+    if any(r.get("first_day") or r.get("last_day") for r in rows) or travel:
+        cols += [("First day", lambda r: _day(r.get("first_day"))),
+                 ("Last day", lambda r: _day(r.get("last_day")))]
     if any(r.get("tuition_max") is not None for r in rows):
         cols.append(("Tuition", lambda r: _money(r.get("tuition_max"))))
     if any(r.get("college_outcome_score") is not None for r in rows):
@@ -54,7 +107,13 @@ def schools_table(rows: Sequence[dict]) -> str:
     cols = school_columns(rows)
     body = [[str(i) if fn is None else str(fn(r)) for (_, fn) in cols]
             for i, r in enumerate(rows, 1)]
-    return table([h for h, _ in cols], body)
+    out = table([h for h, _ in cols], body)
+    notes = []
+    if any(r.get("miles") is not None and r.get("drive_miles") is None for r in rows):
+        notes.append("~ straight-line miles (no drive route computed)")
+    if any(r.get("start_assumed") or r.get("end_assumed") for r in rows):
+        notes.append("* school hasn't published this time (or isn't enriched yet); default used")
+    return out + ("\n\n" + "\n".join(notes) if notes else "")
 
 
 def stats_table(rows: Sequence[dict], group_by: str) -> str:
@@ -71,7 +130,10 @@ def to_csv(rows: Sequence[dict]) -> str:
     if not rows:
         return ""
     buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+    fields: list[str] = []
+    for r in rows:
+        fields += [k for k in r if k not in fields]
+    w = csv.DictWriter(buf, fieldnames=fields)
     w.writeheader()
     for r in rows:
         w.writerow({k: float(v) if isinstance(v, Decimal) else v for k, v in r.items()})

@@ -8,6 +8,7 @@ from . import db
 from .config import settings
 from .crawl import Crawler, chunk_text
 from .extract import AnthropicLLM, extract_facts
+from .normalize import normalize_date, normalize_time
 from .scoring import college_outcome_score
 
 log = logging.getLogger(__name__)
@@ -70,6 +71,21 @@ def enrich_school(conn, school: dict, crawler: Crawler, llm: AnthropicLLM,
         db.add_fact(conn, ppin, "affiliation", {"name": facts.affiliation_name},
                     facts.affiliation.source_url, facts.affiliation.quote,
                     verified["affiliation"], llm.model)
+
+    if facts.schedule:
+        sch = facts.schedule
+        for field, value in (("start_time", sch.start_time), ("end_time", sch.end_time)):
+            t = normalize_time(value)
+            if t:
+                db.add_fact(conn, ppin, field, {"time": t, "applies_to": sch.applies_to},
+                            sch.source_url, sch.quote, verified["schedule"], llm.model)
+    if facts.calendar:
+        cal = facts.calendar
+        for field, value in (("first_day", cal.first_day), ("last_day", cal.last_day)):
+            d = normalize_date(value)
+            if d:
+                db.add_fact(conn, ppin, field, {"date": d, "school_year": cal.school_year},
+                            cal.source_url, cal.quote, verified["calendar"], llm.model)
 
     if embed_pages:
         from .embed import embed

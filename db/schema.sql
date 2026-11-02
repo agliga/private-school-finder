@@ -52,6 +52,19 @@ CREATE TABLE IF NOT EXISTS page_chunks (
 );
 CREATE INDEX IF NOT EXISTS page_chunks_hnsw ON page_chunks USING hnsw (embedding vector_cosine_ops);
 
+-- Cached drive times (origin rounded to ~100 m; slot = weekday + departure time)
+CREATE TABLE IF NOT EXISTS travel_cache (
+    origin_key TEXT NOT NULL,
+    ppin       TEXT REFERENCES schools(ppin) ON DELETE CASCADE,
+    direction  TEXT NOT NULL,                  -- am (origin -> school) | pm (school -> origin)
+    slot       TEXT NOT NULL,                  -- e.g. 'Tue 07:30'
+    minutes    NUMERIC NOT NULL,
+    miles      NUMERIC,
+    provider   TEXT,
+    fetched_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (origin_key, ppin, direction, slot)
+);
+
 -- Derived, query-friendly view (latest verified fact per field)
 DROP VIEW IF EXISTS school_summary;
 CREATE VIEW school_summary AS
@@ -61,5 +74,17 @@ SELECT s.*,
          ORDER BY f.extracted_at DESC LIMIT 1) AS tuition_max,
        (SELECT (f.value_json->>'score')::numeric FROM school_facts f
          WHERE f.ppin = s.ppin AND f.field = 'college_outcome_score' AND f.verified
-         ORDER BY f.extracted_at DESC LIMIT 1) AS college_outcome_score
+         ORDER BY f.extracted_at DESC LIMIT 1) AS college_outcome_score,
+       (SELECT f.value_json->>'time' FROM school_facts f
+         WHERE f.ppin = s.ppin AND f.field = 'start_time' AND f.verified
+         ORDER BY f.extracted_at DESC LIMIT 1) AS start_time,
+       (SELECT f.value_json->>'time' FROM school_facts f
+         WHERE f.ppin = s.ppin AND f.field = 'end_time' AND f.verified
+         ORDER BY f.extracted_at DESC LIMIT 1) AS end_time,
+       (SELECT f.value_json->>'date' FROM school_facts f
+         WHERE f.ppin = s.ppin AND f.field = 'first_day' AND f.verified
+         ORDER BY f.extracted_at DESC LIMIT 1) AS first_day,
+       (SELECT f.value_json->>'date' FROM school_facts f
+         WHERE f.ppin = s.ppin AND f.field = 'last_day' AND f.verified
+         ORDER BY f.extracted_at DESC LIMIT 1) AS last_day
 FROM schools s;

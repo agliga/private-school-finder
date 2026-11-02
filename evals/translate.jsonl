@@ -18,3 +18,8 @@
 {"question": "Baptist schools", "expected": {"affiliation": "Baptist"}}
 {"question": "Montessori schools in San Jose", "expected": {"name_contains": "Montessori", "cities": ["San Jose"]}}
 {"question": "cheapest catholic high schools under $25,000 tuition", "expected": {"religious_groups": ["catholic"], "levels": ["secondary"], "max_tuition": 25000, "sort": "tuition_asc"}}
+{"question": "show me the time it takes from my current location", "expected": {"origin": "current location", "sort": "drive_time"}}
+{"question": "catholic high schools and how long the drive is from 1 Infinite Loop, Cupertino, CA", "expected": {"religious_groups": ["catholic"], "levels": ["secondary"], "origin": "1 Infinite Loop, Cupertino, CA", "sort": "drive_time"}}
+{"question": "schools within a 20 minute drive of home", "expected": {"origin": "home", "max_drive_minutes": 20}}
+{"question": "high schools within a 15 minute drive", "expected": {"levels": ["secondary"], "origin": "current location", "max_drive_minutes": 15}}
+{"question": "Jewish schools near Palo Alto", "expected": {"affiliation": "Jewish", "place": "Palo Alto"}}

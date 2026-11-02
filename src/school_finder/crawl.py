@@ -22,6 +22,8 @@ LINK_KEYWORDS = {
     "admission": 2, "college counseling": 5, "matriculation": 6, "college acceptances": 6,
     "college list": 5, "school profile": 5, "profile": 2, "college": 2, "outcomes": 4,
     "mission": 1, "faith": 1, "about": 1,
+    "calendar": 5, "bell schedule": 6, "daily schedule": 5, "school hours": 5, "schedule": 2,
+    "hours": 1,
 }
 
 
@@ -43,6 +45,20 @@ def html_to_text(html: str) -> tuple[str, str]:
     return title, text.strip()
 
 
+def pdf_to_text(data: bytes, max_pages: int = 10) -> str:
+    """Text of a PDF (school calendars are often PDFs). Empty string if unreadable."""
+    import io
+
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(data))
+        text = "\n".join((pg.extract_text() or "") for pg in reader.pages[:max_pages])
+    except Exception:
+        return ""
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
 def score_links(base_url: str, html: str, limit: int = 6) -> list[str]:
     """Rank same-domain links by how likely they are to hold the facts we need."""
     soup = BeautifulSoup(html, "html.parser")
@@ -53,8 +69,9 @@ def score_links(base_url: str, html: str, limit: int = 6) -> list[str]:
         parsed = urlparse(href)
         if parsed.scheme not in {"http", "https"}:
             continue
-        if parsed.netloc.removeprefix("www.") != host:
-            continue
+        is_pdf = parsed.path.lower().endswith(".pdf")
+        if parsed.netloc.removeprefix("www.") != host and not is_pdf:
+            continue  # PDFs (calendars) are often hosted on a CDN, so allow those
         label = f"{a.get_text(' ', strip=True)} {parsed.path.replace('-', ' ')}".lower()
         score = sum(w for kw, w in LINK_KEYWORDS.items() if kw in label)
         if score:
@@ -109,7 +126,15 @@ class Crawler:
         except self._httpx.HTTPError:
             return None
         time.sleep(self.delay_s)
-        if resp.status_code != 200 or "html" not in resp.headers.get("content-type", ""):
+        ctype = resp.headers.get("content-type", "")
+        if resp.status_code != 200:
+            return None
+        if "pdf" in ctype or str(resp.url).lower().endswith(".pdf"):
+            text = pdf_to_text(resp.content)
+            page = Page(url=str(resp.url), title=str(resp.url).rsplit("/", 1)[-1], text=text)
+            page._html = ""  # type: ignore[attr-defined]
+            return page if text else None
+        if "html" not in ctype:
             return None
         title, text = html_to_text(resp.text)
         page = Page(url=str(resp.url), title=title, text=text)
