@@ -51,27 +51,157 @@ NCES PSS CSV ──► Postgres (schools, geo index)
   are on `data/selective_colleges.txt` (edit it, it's a choice, not a fact). Few schools publish
   true acceptance rates, so this is a transparent proxy shown with its source, not a ranking.
 
-## Quick start
+## Setup (macOS)
+
+**Prerequisites:** Docker (Docker Desktop, or Colima + Docker CLI), Python 3.11+, and an
+Anthropic API key.
 
 ```bash
-cp .env.example .env            # add ANTHROPIC_API_KEY
-docker compose up -d            # Postgres + pgvector, schema auto-loaded
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-set -a; source .env; set +a
+git clone https://github.com/agliga/private-school-finder.git
+cd private-school-finder
 
-# 1. Download the PSS public-use CSV from https://nces.ed.gov/surveys/pss/pssdata.asp
-#    into data/raw/, check the codebook column names, then load the San Jose area:
-school-finder load-pss data/raw/pss2324_pu.csv --state CA --year 2023-24 --county-zip-prefix 950 951
+# Python 3.12 via uv (prebuilt, no compiler needed)
+curl -LsSf https://astral.sh/uv/install.sh | sh     # once; then open a new terminal
+uv venv --python 3.12
+source .venv/bin/activate
+uv pip install -e ".[dev]"
 
-# 2. Enrich a few schools (find site, crawl, extract with citations, embed)
-school-finder enrich --city "San Jose" --limit 5
+# API key
+cp .env.example .env            # paste your key into ANTHROPIC_API_KEY
 
-# 3. Ask
-school-finder ask "Catholic high schools near San Jose under \$30k" -v
-
-# 4. MCP: add to your client config as  {"command": "school-finder", "args": ["mcp"]}
+# Database: Postgres + pgvector, schema loads automatically on first start
+open -a Docker                  # or: colima start
+docker compose up -d
 ```
+
+Every new terminal:
+
+```bash
+cd private-school-finder
+source .venv/bin/activate
+set -a; source .env; set +a
+docker compose up -d            # no-op if already running
+```
+
+## Usage
+
+### 1. Download the school list (NCES Private School Survey)
+
+```bash
+mkdir -p data/raw && cd data/raw
+curl -LO https://nces.ed.gov/surveys/pss/zip/pss2122_pu_csv.zip   # 2021-22 release
+unzip pss2122_pu_csv.zip && ls
+cd ../..
+```
+
+If that URL 404s or a newer year is out, download the **Text** ZIP for the latest year from
+https://nces.ed.gov/surveys/pss/pssdata.asp.
+
+### 2. Load schools into Postgres
+
+Check the column names first (they can change between releases; see `src/school_finder/pss.py`):
+
+```bash
+head -1 data/raw/*.csv | tr ',' '\n' | grep -iE "^(ppin|pinst|pcity|relig|orient|level|numstuds|lat|lon)"
+```
+
+Load California schools in ZIPs starting 950/951 (San Jose area):
+
+```bash
+school-finder load-pss data/raw/<file>.csv --state CA --year 2021-22 --county-zip-prefix 950 951
+```
+
+Verify (`count(lat)` should be close to `count(*)`; if it is 0 the release has no coordinates
+and radius search won't work yet):
+
+```bash
+docker compose exec db psql -U schools -c "select count(*), count(lat) from schools;"
+docker compose exec db psql -U schools -c "select ppin, name, city, religious_group from schools limit 10;"
+```
+
+### 3. Enrich schools (uses the API)
+
+Finds each school's website, crawls the relevant pages, extracts tuition / affiliation /
+college lists with a quote + URL per fact, verifies the quotes, and embeds the pages.
+
+```bash
+school-finder enrich --city "San Jose" --limit 5
+school-finder enrich --ppin A1234567 B7654321      # specific schools
+```
+
+Each school prints one JSON line; `"status": "ok"` with `"verified": {"tuition": true, ...}`
+means it worked. See what was extracted:
+
+```bash
+docker compose exec db psql -U schools -c \
+  "select s.name, f.field, f.value_json, f.verified, f.source_url from school_facts f join schools s using (ppin);"
+```
+
+Cost: a few cents per school with the default Haiku extraction model.
+
+### 4. Ask questions
+
+```bash
+school-finder ask "Catholic high schools near San Jose under \$30k" -v
+```
+
+`-v` prints the tool calls the agent made. Answers cite sources; anything a school doesn't
+publish is reported as "not published".
+
+### 5. Use from Claude Code, Cursor or Claude Desktop (MCP)
+
+Add to your MCP client config (use your absolute path):
+
+```json
+{
+  "school-finder": {
+    "command": "/absolute/path/to/private-school-finder/.venv/bin/school-finder",
+    "args": ["mcp"],
+    "env": { "DATABASE_URL": "postgresql://schools:schools@localhost:5432/schools" }
+  }
+}
+```
+
+Tools exposed: `search_schools`, `semantic_search`, `get_school`.
+
+### 6. Run evals
+
+```bash
+school-finder snapshot --ppin <PPIN>              # freeze that school's pages
+# hand-label it in evals/labels/extraction.jsonl (format in evals/README.md)
+school-finder eval --suite extraction             # score
+school-finder eval --suite extraction --update-baseline
+git add evals && git commit -m "Add eval labels" && git push
+```
+
+CI runs the eval on every push (needs the `ANTHROPIC_API_KEY` repo secret under
+Settings > Secrets and variables > Actions) and fails if a metric regresses.
+
+### Command reference
+
+| Command | What it does |
+|---|---|
+| `school-finder load-pss <csv> [--state CA] [--county-zip-prefix 950 951]` | Import schools from the PSS file |
+| `school-finder enrich [--city X \| --ppin ...] [--limit N] [--no-embed]` | Find site, crawl, extract, verify, embed |
+| `school-finder snapshot [--city X \| --ppin ...]` | Freeze pages for evals |
+| `school-finder ask "<question>" [-v]` | Ask the query agent |
+| `school-finder eval [--suite extraction\|queries\|all] [--check] [--update-baseline]` | Run evals |
+| `school-finder mcp` | Start the MCP server (stdio) |
+
+Settings live in `.env`: `DATABASE_URL`, `ANTHROPIC_API_KEY`, `EXTRACT_MODEL`,
+`AGENT_MODEL`, `EMBED_MODEL`, `CRAWL_USER_AGENT`.
+
+## Troubleshooting
+
+| Error | Fix |
+|---|---|
+| `unknown shorthand flag: 'd' in -d` | Docker Compose plugin missing: `brew install docker-compose`, then `mkdir -p ~/.docker/cli-plugins && ln -sfn "$(brew --prefix)/opt/docker-compose/bin/docker-compose" ~/.docker/cli-plugins/docker-compose` |
+| `failed to connect to the docker API ... docker.sock` | Docker isn't running: `open -a Docker` or `colima start` |
+| `docker-credential-desktop: executable file not found` | Leftover Docker Desktop setting: remove the `"credsStore"` line from `~/.docker/config.json` (keep the JSON valid) |
+| `requires a different Python: 3.9.6 not in '>=3.11'` | macOS system Python is too old: use `uv venv --python 3.12` (see Setup) |
+| `brew install python` fails with `C compiler cannot create executables` | Use uv instead, or reinstall Command Line Tools: `sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install` |
+| `pip: command not found` inside the venv | uv venvs don't include pip; use `uv pip install ...` |
+| `Unknown place '...'` from `ask` | Add the city to `PLACES` in `src/school_finder/tools.py`, or ask with coordinates |
 
 ## Evals
 
